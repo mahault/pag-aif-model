@@ -1,74 +1,101 @@
-# PAG-AIF Model: Multi-World Active Inference Simulation
+# PAG-AIF Model: Periaqueductal Gray + Active Inference Simulation
 
-A computational framework for **Predictive Action Generation** using the **Active Inference Framework (AIF)**, featuring multi-dimensional action spaces across parallel "worlds" -- spatial navigation, pose configuration, and social interaction.
+A computational model of the **Periaqueductal Gray (PAG)** as a competitive attractor network driven by **Active Inference (AIF)**, generating coordinated multi-dimensional behavior across spatial, postural, and social action spaces.
 
 ## Overview
 
-This project implements a multi-world active inference simulation where agents operate across multiple action dimensions simultaneously:
+The PAG orchestrates defensive and affiliative behaviors by selecting coordinated action patterns across multiple output dimensions. This project models that process as:
 
-- **Spatial World** -- World actions are translated into movements of a dot on a grid/continuous space
-- **Pose World** -- Pose actions are translated into body/agent configuration representations
-- **Social World** -- Social actions are represented as calls, signals, or other interaction modalities
+1. **POMDP / AIF layer** -- Infers the agent's context from multi-dimensional sensory input and computes precision (domain salience) and arousal (active/passive gating)
+2. **PAG competitive attractor network** -- A 6x2 matrix of neurons (6 domains x active/passive) that compete to select a behavioral pattern
+3. **Output dynamics** -- Winning attractors bias the agent's behavior in parallel action spaces (pose, world movement, social signals)
 
-The simulation runs these worlds in parallel, with cross-modal dependencies allowing each dimension to influence the others (e.g., social signals depend on spatial proximity; pose may constrain navigation).
+### PAG Domain / Policy Structure
+
+| Domain | Active Policy | Passive/Modulatory Policy |
+|--------|--------------|--------------------------|
+| **Pain/body** | withdraw, escape, seek care | analgesia, guarding, immobility |
+| **Peripersonal risk** | flee, evade, attack | freeze, hide, risk-assess |
+| **Social threat** | vocalize, appease, attack, leave | submission, social freezing, collapse |
+| **Sex/reproduction** | approach, solicitation | lordosis, receptive posture |
+| **Care/attachment** | contact-seeking, distress calling | huddling, stillness, dependence |
+| **Panic/entrapment** | frantic escape, struggle | freeze, shutdown, inhibition |
 
 ## Architecture
 
-The model uses a **Factorized Hierarchical POMDP** generative model:
-
 ```
-                    [Meta-Level Controller]
-                   (policy arbitration across worlds)
-                              |
-               +--------------+--------------+
-               |              |              |
-       [Spatial World]  [Pose World]   [Social World]
-       (navigation)     (body config)  (communication)
-```
-
-### Generative Model Components
-
-| Component | Description |
-|-----------|-------------|
-| **A matrix** (likelihood) | Maps hidden states to observations, encoding cross-modal dependencies |
-| **B matrix** (transitions) | Per-world dynamics with controlled coupling between worlds |
-| **C matrix** (preferences) | Per-modality preferred observations encoding agent goals |
-| **D matrix** (priors) | Initial beliefs about each state factor |
-
-### State Space Factorization
-
-```python
-num_states   = [N_spatial, N_pose, N_social]       # Hidden state factors
-num_obs      = [N_visual, N_proprioceptive, N_social_obs]  # Observation modalities
-num_controls = [N_move, N_pose_act, N_call]         # Control factors (action dims)
+   Input Spaces (K=4)              PAG Network (6x2)            Output Spaces
+ ┌───────────────────┐          ┌─────────────────────┐       ┌──────────────┐
+ │ Spatial (2D)      │─┐       │ Body  Perip  World  │       │ Pose         │
+ │  safety/exposure  │ │       │ Other Social Panic  │──────▶│ World Action │
+ │ Body (2D)         │─┤─AIF──▶│                     │       │ Social/Call  │
+ │  pain/arousal     │ │ bias  │ Row 1: Active       │       └──────────────┘
+ │ Relational (1D)   │─┤       │ Row 2: Passive      │
+ │  agent proximity  │ │       └─────────────────────┘
+ │ Emotional (1D)    │─┘              ▲
+ │  friend/predator  │               │
+ └───────────────────┘        AIF_bias_ij =
+                              precision_i * arousal_j
 ```
 
-## Approach
+### PAG Neuron Dynamics
 
-### Multi-World Design Rationale
+Each neuron x_ij (domain i, mode j) evolves as:
 
-The factorized state space formalism in active inference natively supports multiple hidden state factors and control factors. Each "world" corresponds to a control factor dimension, allowing:
+```
+dx_ij/dt = -x_ij + f(input_ij + AIF_bias_ij - inhibition_ij + compatibility_ij)
+```
 
-- **Independent inference** within each world (mean-field factorization)
-- **Cross-modal coupling** through shared states or likelihood dependencies
-- **Hierarchical control** via meta-level policy arbitration
+Where:
+- **input_ij**: Gaussian sensory gradient fields (e.g., e^(-(x-p)^2))
+- **AIF_bias_ij**: precision_column_i * arousal_j -- domain salience x active/passive gating
+- **inhibition_ij**: lateral competition between incompatible attractors
+- **compatibility_ij**: cooperation between compatible patterns (flee + vocalize can co-activate)
 
-This design is grounded in recent work on scale-free active inference (AXIOM, 2025) and factorized multi-agent active inference (Ruiz-Serra et al., 2024).
+### Output Mapping
 
-### Implementation Strategy
+Winning attractors bias dynamics in each output space:
 
-1. **Phase 1** -- Spatial navigation with pymdp (dot on grid). Validate state inference and policy selection.
-2. **Phase 2** -- Add pose as a second control factor. Verify factorized inference across two worlds.
-3. **Phase 3** -- Add social world and introduce a second agent. Implement cross-agent observations.
-4. **Phase 4** -- Scale to multiple agents and simultaneous environments. Introduce hierarchical control.
-5. **Phase 5** -- Evaluate against baselines, tune precision parameters, explore deep AIF extensions if needed.
+```
+x_dot = p_winner * (x - g_winner) + noise
+```
 
-### Key Technical Considerations
+Each attractor defines goal points g in the pose, spatial, and social planes. The winning attractor's parameter p dominates, steering the agent's trajectory.
 
-- **Combinatorial policy space**: Factorized mean-field policy selection mitigates the explosion of joint policies across action dimensions.
-- **Temporal scale mismatches**: Spatial navigation may operate at faster time scales than social interactions -- hierarchical temporal models address this.
-- **Cross-modal dependencies**: Social signals depend on spatial proximity; pose may constrain navigation. Encoded as sparse conditional dependencies in the A matrix.
-- **Ablation-first validation**: Each world is tested independently before coupling.
+### Input Spaces
+
+| Space | Dimensions | Gradient Encodes |
+|-------|-----------|-----------------|
+| **Spatial** | 2D Cartesian | Shelter vs. open, proximity to boundaries |
+| **Body** | 2D (pain, arousal) | Interoceptive state, homeostatic distance |
+| **Relational** | 1D | Physical distance to other agents |
+| **Emotional** | 1D | Appraisal of other: friend (-1) to predator (+1) |
+
+## Implementation
+
+### Division of Labor
+
+- **POMDP / AIF** (`src/pomdp_specification.py`): State inference, observation model, preference model, precision/arousal computation
+- **PAG Network** (Alejandro): Competitive attractor dynamics, compatibility structure, winner selection
+- **Integration**: POMDP precision/arousal → PAG bias; PAG winners → action dynamics → state transitions
+
+### Key Equations
+
+**Precision** (posterior over domains given observations):
+```
+precision_i = exp(-2 * ||obs - profile_i||^2) / Z
+```
+
+**Arousal gating**:
+```
+arousal_active  = body_arousal
+arousal_passive = 1 - body_arousal
+```
+
+**AIF bias** (outer product):
+```
+bias_ij = precision_i * arousal_j    shape: (6, 2)
+```
 
 ## Tech Stack
 
@@ -81,14 +108,18 @@ This design is grounded in recent work on scale-free active inference (AXIOM, 20
 
 ```
 pag-aif-model/
-├── src/                  # Source code
-│   ├── worlds/           # World implementations (spatial, pose, social)
-│   ├── agents/           # Active inference agent definitions
-│   └── utils/            # Shared utilities
-├── notebooks/            # Jupyter notebooks for analysis and Colab exports
-├── experiments/          # Experiment configurations and scripts
-├── tests/                # Unit and integration tests
-├── docs/                 # Documentation and reports
+├── src/
+│   ├── pomdp_specification.py  # POMDP: input spaces, observations, precision/arousal
+│   ├── pag_network.py          # PAG: competitive attractor dynamics (Alejandro)
+│   ├── output_dynamics.py      # Output: attractor-weighted action generation
+│   ├── simulation.py           # Full loop integration
+│   ├── worlds/                 # Environment definitions
+│   ├── agents/                 # Agent wrappers
+│   └── utils/                  # Shared utilities
+├── notebooks/                  # Jupyter notebooks for analysis and Colab exports
+├── experiments/                # Experiment configurations and scripts
+├── tests/                      # Unit and integration tests
+├── docs/                       # Documentation and reports
 └── README.md
 ```
 
