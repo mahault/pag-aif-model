@@ -163,9 +163,39 @@ pag-aif-model/
 
 - VERSES AI / Friston, K. et al. (2025). *AXIOM: Active Inference Robotics Architecture.* [Blog](https://www.verses.ai/research-blog/why-learn-if-you-can-infer-active-inference-for-robot-planning-control)
 
+### Allostatic / Multi-Gradient Navigation
+
+- Csar Hernandez-Castellanos, O. et al. (2022). *Allostatic control of behavioral flexibility in goal-driven survival circuits.* Frontiers in Robotics and AI. [Full text](https://www.frontiersin.org/journals/robotics-and-ai/articles/10.3389/frobt.2022.1052998/full)
+
 ### Reference Collections
 
 - Millidge, B. *FEP Active Inference Papers.* [GitHub](https://github.com/BerenMillidge/FEP_Active_Inference_Papers)
+
+## Visualization Roadmap
+
+Inspired by the multi-gradient approach in Hernandez-Castellanos et al. (2022, Paul's lab), the simulation results will be reported as coordinated multi-space visualizations:
+
+### Per-run panel layout
+
+1. **Spatial trajectory** (2D) -- Agent path in the world with shelter/threat zones shaded as gradient fields. Path color-coded by dominant PAG domain at each timestep.
+
+2. **Pose trajectory** (2D) -- Path through (upright/crouch x tense/relaxed) space. Shows behavioral mode transitions: clusters during freeze, arcs during flee.
+
+3. **Interoceptive trajectory** (2D) -- Path through (heart rate x respiration) space. Shows autonomic state regulation and arousal dynamics.
+
+4. **Social signal trajectory** (2D) -- Path through (call intensity x call valence) space. Shows vocalization patterns over time.
+
+5. **Occupancy heatmaps** -- One per output space. Directly compare where the agent "lives" in each space and how threat/context shifts the distribution. This extends beyond the single physical-space trajectory shown in Hernandez-Castellanos et al.
+
+6. **PAG activation time series** -- The (6x2) neuron activation matrix over time, rendered as a heatmap strip or stacked area plot. Shows which domains win competition and when transitions occur.
+
+7. **Precision / arousal time series** -- AIF layer context inference over time. Shows how domain salience and active/passive gating evolve.
+
+### Comparative analysis
+
+- **Condition contrasts**: Same agent in different environments (safe vs. threatening), showing occupancy shifts across all 4 output spaces simultaneously.
+- **Ablation panels**: Remove individual PAG columns or disable active/passive gating to isolate each component's contribution.
+- **Multi-agent**: Show two agents' trajectories in the same spatial field with social signal exchange highlighted.
 
 ## Getting Started
 
