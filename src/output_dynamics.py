@@ -52,28 +52,63 @@ from typing import Optional
 # =============================================================================
 # PAG NEURON INDEXING
 # =============================================================================
-# 6 domains x 2 modes = 12 neurons
-# PAG activation matrix shape: (6, 2)
+# Alejandro's notebook uses 5 columns (no separate Panic/Entrapment).
+# The POMDP specification uses 6 domains (includes Panic).
+# This module supports both via NUM_DOMAINS parameter and automatic
+# format detection.
 #
-# Domain indices:
+# Alejandro's PAG network outputs shape (2, N) = (rows, cols)
+#   where rows: [Active=0, Passive=1], cols: [Body, Perip, World, Other, Social]
+#
+# The POMDP bias computer outputs shape (N, 2) = (domains, modes)
+#
+# The normalize_activations() function handles both layouts.
+#
+# Column indices (shared):
 #   0 = Body/Pain
 #   1 = Peripersonal Risk
 #   2 = World/Escape
 #   3 = Other-agent/Confrontation
 #   4 = Social field/Signalling
-#   5 = Panic/Entrapment
+#   5 = Panic/Entrapment (optional, only in 6-domain mode)
 #
 # Mode indices:
 #   0 = Active (dorsal)
 #   1 = Passive (ventrolateral)
 
-NUM_DOMAINS = 6
 NUM_MODES = 2
-NUM_NEURONS = NUM_DOMAINS * NUM_MODES
 
 # Output space names and dimensions
 OUTPUT_SPACES = ["spatial", "pose", "interoceptive", "social"]
 OUTPUT_DIMS = 2  # each output space is 2D
+
+
+def normalize_activations(pag_activations: np.ndarray) -> np.ndarray:
+    """
+    Accept PAG activations in either format and return (num_domains, 2).
+
+    Supported input shapes:
+      (N, 2) — POMDP format (domains x modes) → returned as-is
+      (2, N) — Alejandro's format (modes x domains) → transposed
+      (2*N,) — flat → reshaped to (N, 2)
+
+    If input has 5 columns, a zero-padded 6th domain (Panic) is appended
+    for compatibility with the 6-domain goal table. If the goal table
+    only has 5 domains, no padding is needed.
+    """
+    a = np.asarray(pag_activations, dtype=float)
+
+    if a.ndim == 1:
+        # Flat: assume (2*N,) → (N, 2)
+        n = a.shape[0] // 2
+        a = a.reshape(n, 2)
+    elif a.ndim == 2:
+        if a.shape[0] == 2 and a.shape[1] != 2:
+            # Shape (2, N) — Alejandro's format → transpose to (N, 2)
+            a = a.T
+        # else: shape (N, 2) — POMDP format, keep as-is
+
+    return a
 
 
 # =============================================================================
@@ -86,7 +121,7 @@ class AttractorGoalTable:
     Maps each PAG neuron to goal points in each output space.
 
     Shape: (num_domains, num_modes, num_output_spaces, output_dims)
-           = (6, 2, 4, 2)
+           = (5 or 6, 2, 4, 2)
 
     Each entry g[i, j, s, :] is the 2D goal point for domain i, mode j,
     in output space s.
@@ -96,8 +131,12 @@ class AttractorGoalTable:
       Pose:          (upright↔crouch, tense↔relaxed) — [-1, 1] each
       Interoceptive: (heart_rate_target, respiration_target) — [0, 1] each
       Social:        (call_intensity, call_valence) — [0,1] x [-1,1]
+
+    Supports both 5-column (Alejandro's notebook) and 6-column (with Panic)
+    configurations via the num_domains parameter.
     """
     goals: np.ndarray = field(default=None)
+    num_domains: int = 5  # default matches Alejandro's 5-column PAG
 
     def __post_init__(self):
         if self.goals is None:
@@ -109,7 +148,7 @@ class AttractorGoalTable:
 
         Each row: [spatial(2D), pose(2D), interoceptive(2D), social(2D)]
         """
-        g = np.zeros((NUM_DOMAINS, NUM_MODES, len(OUTPUT_SPACES), OUTPUT_DIMS))
+        g = np.zeros((self.num_domains, NUM_MODES, len(OUTPUT_SPACES), OUTPUT_DIMS))
 
         # ── Domain 0: Body/Pain ──────────────────────────────────
         # Active: withdraw, escape despite injury, seek care
@@ -191,21 +230,22 @@ class AttractorGoalTable:
             [0.3, 0.8],     # social: soft affiliative signal
         ]
 
-        # ── Domain 5: Panic/Entrapment ───────────────────────────
-        # Active: frantic escape, struggle
-        g[5, 0] = [
-            [0.8, 0.8],     # spatial: frantic undirected movement
-            [0.3, 1.0],     # pose: variable, maximum tension
-            [1.0, 1.0],     # intero: maximum HR, hyperventilation
-            [1.0, -1.0],    # social: maximum alarm / distress scream
-        ]
-        # Passive: freeze, shutdown, breath-holding inhibition
-        g[5, 1] = [
-            [0.0, 0.0],     # spatial: collapsed, immobile
-            [-1.0, -0.8],   # pose: collapsed, limp
-            [0.1, 0.1],     # intero: near-shutdown, minimal vitals
-            [0.0, 0.0],     # social: silent (dissociative)
-        ]
+        # ── Domain 5: Panic/Entrapment (only if num_domains >= 6) ─
+        if self.num_domains >= 6:
+            # Active: frantic escape, struggle
+            g[5, 0] = [
+                [0.8, 0.8],     # spatial: frantic undirected movement
+                [0.3, 1.0],     # pose: variable, maximum tension
+                [1.0, 1.0],     # intero: maximum HR, hyperventilation
+                [1.0, -1.0],    # social: maximum alarm / distress scream
+            ]
+            # Passive: freeze, shutdown, breath-holding inhibition
+            g[5, 1] = [
+                [0.0, 0.0],     # spatial: collapsed, immobile
+                [-1.0, -0.8],   # pose: collapsed, limp
+                [0.1, 0.1],     # intero: near-shutdown, minimal vitals
+                [0.0, 0.0],     # social: silent (dissociative)
+            ]
 
         return g
 
@@ -264,7 +304,7 @@ class OutputSpace:
         Parameters
         ----------
         pag_activations : np.ndarray, shape (num_domains, num_modes)
-            Activation levels of all PAG neurons.
+            Activation levels of all PAG neurons. Accepts (N, 2) or (2, N).
         goal_table : AttractorGoalTable
             Neuron-to-goal mapping.
         dt : float
@@ -274,12 +314,15 @@ class OutputSpace:
         -------
         np.ndarray : the new 2D state
         """
+        act = normalize_activations(pag_activations)
+        n_domains = min(act.shape[0], goal_table.num_domains)
+
         force = np.zeros(2)
         total_weight = 0.0
 
-        for i in range(NUM_DOMAINS):
+        for i in range(n_domains):
             for j in range(NUM_MODES):
-                w = pag_activations[i, j]
+                w = act[i, j]
                 if w > 0.01:
                     goal = goal_table.get_goal(i, j, self.space_idx)
                     force += w * (goal - self.state)
@@ -307,8 +350,12 @@ class OutputDynamics:
     """
     Manages all 4 output spaces and converts PAG activations into actions.
 
+    Accepts PAG activations in either format:
+      - (N, 2) — POMDP format (domains x modes)
+      - (2, N) — Alejandro's notebook format (modes x domains)
+
     Each timestep:
-      1. Receive PAG activations (6, 2)
+      1. Receive PAG activations
       2. Evolve each output space toward winning attractor goals
       3. Convert output states into action dict for POMDPAgent
 
@@ -319,10 +366,11 @@ class OutputDynamics:
     def __init__(
         self,
         goal_table: Optional[AttractorGoalTable] = None,
+        num_domains: int = 5,
         dt: float = 0.1,
         spatial_speed: float = 1.0,
     ):
-        self.goal_table = goal_table or AttractorGoalTable()
+        self.goal_table = goal_table or AttractorGoalTable(num_domains=num_domains)
         self.dt = dt
         self.spatial_speed = spatial_speed
 
@@ -362,7 +410,8 @@ class OutputDynamics:
 
         Parameters
         ----------
-        pag_activations : np.ndarray, shape (6, 2)
+        pag_activations : np.ndarray, shape (N, 2) or (2, N)
+            PAG neuron activations. Auto-detected and normalized.
         threat_direction : np.ndarray or None, shape (2,)
             Unit vector from agent toward threat.
         shelter_direction : np.ndarray or None, shape (2,)
@@ -487,7 +536,8 @@ if __name__ == "__main__":
     print("PAG-AIF Output Dynamics — Sanity Check")
     print("=" * 55)
 
-    output = OutputDynamics(dt=0.1)
+    N_DOM = 5  # match Alejandro's 5-column PAG
+    output = OutputDynamics(num_domains=N_DOM, dt=0.1)
 
     def run_scenario(name, pag, steps=50, threat_dir=None, shelter_dir=None):
         output.reset()
@@ -501,51 +551,61 @@ if __name__ == "__main__":
         print(f"  Interaction:   {result['interaction_signal']:.3f}")
         return result
 
+    # --- 5-domain tests (Alejandro's format: (2, N)) ---
+    print("\n=== 5-domain mode (Alejandro's (2, N) format) ===")
+
     # 1. Resting
-    pag = np.zeros((NUM_DOMAINS, NUM_MODES))
+    pag = np.zeros((2, N_DOM))  # Alejandro's (2, N) layout
     run_scenario("Resting (no PAG activity)", pag, steps=20)
 
-    # 2. Active flee
-    pag = np.zeros((NUM_DOMAINS, NUM_MODES))
-    pag[2, 0] = 1.0
+    # 2. Active flee — using (2, N) format
+    pag = np.zeros((2, N_DOM))
+    pag[0, 2] = 1.0  # Active row, World/Escape column
     run_scenario(
-        "Active flee (World/Escape, active)",
+        "Active flee (World/Escape, active) — (2,N) format",
         pag,
         threat_dir=np.array([1.0, 0.0]),
         shelter_dir=np.array([-1.0, -0.5]),
     )
 
-    # 3. Freeze
-    pag = np.zeros((NUM_DOMAINS, NUM_MODES))
-    pag[1, 1] = 1.0
-    run_scenario("Freeze (Peripersonal Risk, passive)", pag)
+    # 3. Freeze — using (N, 2) format for comparison
+    pag = np.zeros((N_DOM, 2))
+    pag[1, 1] = 1.0  # Peripersonal, Passive
+    run_scenario("Freeze (Peripersonal, passive) — (N,2) format", pag)
 
     # 4. Affiliative approach
-    pag = np.zeros((NUM_DOMAINS, NUM_MODES))
-    pag[4, 0] = 1.0
+    pag = np.zeros((2, N_DOM))
+    pag[0, 4] = 1.0  # Active, Social
     run_scenario("Affiliative approach (Social, active)", pag)
 
-    # 5. Panic active
-    pag = np.zeros((NUM_DOMAINS, NUM_MODES))
-    pag[5, 0] = 1.0
-    run_scenario("Panic escape (Panic, active)", pag)
-
-    # 6. Panic passive (shutdown)
-    pag = np.zeros((NUM_DOMAINS, NUM_MODES))
-    pag[5, 1] = 1.0
-    run_scenario("Shutdown (Panic, passive)", pag)
-
-    # 7. Competition: flee vs freeze
-    pag = np.zeros((NUM_DOMAINS, NUM_MODES))
-    pag[2, 0] = 0.6
-    pag[1, 1] = 0.4
+    # 5. Competition: flee vs freeze
+    pag = np.zeros((2, N_DOM))
+    pag[0, 2] = 0.6  # Active World/Escape
+    pag[1, 1] = 0.4  # Passive Peripersonal
     run_scenario("Competing: flee(0.6) vs freeze(0.4)", pag)
 
-    # 8. Compatible co-activation: flee + alarm call
-    pag = np.zeros((NUM_DOMAINS, NUM_MODES))
-    pag[2, 0] = 0.7
-    pag[3, 0] = 0.5
+    # 6. Compatible co-activation: flee + confront (from Sim C+F)
+    pag = np.zeros((2, N_DOM))
+    pag[0, 2] = 0.7  # Active World/Escape
+    pag[0, 3] = 0.5  # Active Other-agent
     run_scenario("Compatible: flee(0.7) + confront(0.5)", pag)
+
+    # --- 6-domain test ---
+    print("\n=== 6-domain mode (with Panic/Entrapment) ===")
+    output_6 = OutputDynamics(num_domains=6, dt=0.1)
+
+    pag6 = np.zeros((6, 2))
+    pag6[5, 0] = 1.0  # Panic, Active
+    output_6.reset()
+    for _ in range(50):
+        result = output_6.step(pag6)
+    print(f"\n--- Panic escape (domain 5, active) ---")
+    print(f"  Spatial:       {np.round(result['spatial_action'], 3)}")
+    print(f"  Pose:          {np.round(result['pose_state'], 3)}")
+    print(f"  Interoceptive: {np.round(result['interoceptive_state'], 3)}")
+    print(f"  Social:        {np.round(result['social_signal'], 3)}")
 
     print("\n" + "=" * 55)
     print("Output dynamics sanity check complete.")
+    print(f"Supports both (2, N) and (N, 2) PAG activation formats.")
+    print(f"Supports both 5-column and 6-column PAG configurations.")
